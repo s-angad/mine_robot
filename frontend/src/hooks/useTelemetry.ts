@@ -15,66 +15,94 @@ export function useTelemetry() {
   const isConnectedRef = useRef<boolean>(false);
   const demoStepRef = useRef<number>(0);
 
-  // 1. WebSocket Connection to Python FastAPI Backend
+  // 1. WebSocket Connection to Python FastAPI Backend (Deployed / Local)
   useEffect(() => {
-    let wsUrl = "ws://localhost:8000/ws/telemetry";
-    let ws: WebSocket;
+    const defaultWsUrl = typeof window !== "undefined" && window.location.protocol === "https:"
+      ? "wss://mine-robot.onrender.com/ws/telemetry"
+      : "wss://mine-robot.onrender.com/ws/telemetry";
 
-    try {
-      ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || defaultWsUrl;
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let isDisposed = false;
 
-      ws.onopen = () => {
-        isConnectedRef.current = true;
-        updateTelemetry({
-          communication: { signal: 100, connected: true, qualityText: "EXCELLENT", wifiSignal: 100, fiveGSignal: 96, loraSignal: 98 },
-        });
-        addEvent({
-          timestamp: new Date().toLocaleTimeString(),
-          elapsedSec: 0,
-          title: "WebSocket Telemetry Connected",
-          description: "Live connection established with Python FastAPI backend",
-          type: "SYSTEM",
-        });
-      };
+    const connect = () => {
+      if (isDisposed) return;
+      try {
+        ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
-      ws.onmessage = (event) => {
-        try {
-          const data: TelemetryData = JSON.parse(event.data);
-          const currentPos = useMissionStore.getState().telemetry.position;
-          // If backend sends default (0,0.4,0) position while rover has moved, preserve active teleoperated position
-          if (
-            data.position &&
-            data.position.x === 0 &&
-            data.position.z === 0 &&
-            (currentPos.x !== 0 || currentPos.z !== 0)
-          ) {
-            delete (data as any).position;
-            delete (data as any).heading;
-            delete (data as any).speed;
+        ws.onopen = () => {
+          if (isDisposed) return;
+          isConnectedRef.current = true;
+          updateTelemetry({
+            communication: { signal: 100, connected: true, qualityText: "EXCELLENT", wifiSignal: 100, fiveGSignal: 96, loraSignal: 98 },
+          });
+          addEvent({
+            timestamp: new Date().toLocaleTimeString(),
+            elapsedSec: 0,
+            title: "WebSocket Telemetry Connected",
+            description: "Live connection established with deployed FastAPI backend (mine-robot.onrender.com)",
+            type: "SYSTEM",
+          });
+        };
+
+        ws.onmessage = (event) => {
+          if (isDisposed) return;
+          try {
+            const data: TelemetryData = JSON.parse(event.data);
+            const currentPos = useMissionStore.getState().telemetry.position;
+            // If backend sends default (0,0.4,0) position while rover has moved, preserve active teleoperated position
+            if (
+              data.position &&
+              data.position.x === 0 &&
+              data.position.z === 0 &&
+              (currentPos.x !== 0 || currentPos.z !== 0)
+            ) {
+              delete (data as any).position;
+              delete (data as any).heading;
+              delete (data as any).speed;
+            }
+            updateTelemetry(data);
+          } catch (e) {
+            console.error("Failed to parse telemetry JSON", e);
           }
-          updateTelemetry(data);
-        } catch (e) {
-          console.error("Failed to parse telemetry JSON", e);
+        };
+
+        ws.onclose = () => {
+          if (isDisposed) return;
+          isConnectedRef.current = false;
+          updateTelemetry({
+            communication: { signal: 85, connected: false, qualityText: "DEGRADED", wifiSignal: 80, fiveGSignal: 70, loraSignal: 90 },
+          });
+          // Attempt auto-reconnect after 5 seconds if disconnected
+          reconnectTimeout = setTimeout(connect, 5000);
+        };
+
+        ws.onerror = () => {
+          if (isDisposed) return;
+          isConnectedRef.current = false;
+        };
+      } catch (e) {
+        console.log("Backend WS offline, using client simulation engine");
+        if (!isDisposed) {
+          reconnectTimeout = setTimeout(connect, 5000);
         }
-      };
+      }
+    };
 
-      ws.onclose = () => {
-        isConnectedRef.current = false;
-        updateTelemetry({
-          communication: { signal: 85, connected: false, qualityText: "DEGRADED", wifiSignal: 80, fiveGSignal: 70, loraSignal: 90 },
-        });
-      };
-
-      ws.onerror = () => {
-        isConnectedRef.current = false;
-      };
-    } catch (e) {
-      console.log("Backend WS offline, using client simulation engine");
-    }
+    connect();
 
     return () => {
-      if (ws) ws.close();
+      isDisposed = true;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.close();
+      }
     };
   }, [updateTelemetry, addEvent]);
 

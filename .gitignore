@@ -1,0 +1,28 @@
+@"
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Next.js
+.next/
+**/.next/
+
+# Build output
+dist/
+**/dist/
+build/
+**/build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+
+# OS / editor
+.DS_Store
+.vscode/
+"@ | Set-Content .gitignore
